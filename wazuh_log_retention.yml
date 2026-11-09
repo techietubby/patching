@@ -1,0 +1,82 @@
+---
+# Keep Wazuh application logs for a fixed number of days.
+#
+# Installs a small purge script plus a daily cron job on the Wazuh server, and
+# aligns the indexer logrotate config with the same retention. Only rotated or
+# archived files are deleted - live log files (e.g. the indexer slowlogs, which
+# can sit idle for weeks) are never touched.
+#
+# Usage:
+#   ansible-playbook -i inventory wazuh_log_retention.yml
+#   ansible-playbook -i inventory wazuh_log_retention.yml -e wazuh_log_retention_days=30
+#   ansible-playbook -i inventory wazuh_log_retention.yml -e wazuh_log_retention_run_now=true
+
+- name: Configure Wazuh log retention
+  hosts: wazuh
+  remote_user: root
+  become: true
+  vars:
+    wazuh_log_retention_days: 14
+    wazuh_log_retention_script: /usr/local/sbin/wazuh-log-retention
+    wazuh_log_retention_cron_hour: "1"
+    wazuh_log_retention_cron_minute: "30"
+    # Set to true to also run the purge immediately after installing it
+    wazuh_log_retention_run_now: false
+  tasks:
+    - name: Ensure cronie is installed
+      ansible.builtin.package:
+        name: cronie
+        state: present
+
+    - name: Install log retention script
+      ansible.builtin.copy:
+        dest: "{{ wazuh_log_retention_script }}"
+        owner: root
+        group: root
+        mode: "0750"
+        content: |
+          #!/bin/bash
+          # Managed by Ansible (patching/wazuh_log_retention.yml) - do not edit by hand.
+          # Purge rotated Wazuh application logs older than RETENTION_DAYS.
+          # Only rotated/archived files are touched - live log files are never deleted.
+          RETENTION_DAYS={{ wazuh_log_retention_days | int }}
+          TAG=wazuh-log-retention
+
+          # Wazuh manager: rotated logs live under /var/ossec/logs/<type>/YYYY/Mon/
+          for d in alerts archives api firewall wazuh cluster; do
+              [ -d "/var/ossec/logs/$d" ] || continue
+              find "/var/ossec/logs/$d" -mindepth 3 -type f -mtime +"$RETENTION_DAYS" -print -delete
+              find "/var/ossec/logs/$d" -mindepth 1 -type d -empty -print -delete
+          done | logger -t "$TAG"
+
+          # Wazuh indexer: rotated logs only (gz archives, dated deprecation logs, rotated GC logs)
+          if [ -d /var/log/wazuh-indexer ]; then
+              find /var/log/wazuh-indexer -maxdepth 1 -type f -mtime +"$RETENTION_DAYS" \
+                  \( -name '*.gz' -o -name '*_deprecation.*-[0-9]*' -o -name 'gc.log.*' \) \
+                  -print -delete | logger -t "$TAG"
+          fi
+
+    - name: Schedule daily log retention job
+      ansible.builtin.cron:
+        name: wazuh-log-retention
+        cron_file: wazuh-log-retention
+        user: root
+        hour: "{{ wazuh_log_retention_cron_hour }}"
+        minute: "{{ wazuh_log_retention_cron_minute }}"
+        job: "{{ wazuh_log_retention_script }}"
+
+    - name: Check for indexer logrotate config
+      ansible.builtin.stat:
+        path: /etc/logrotate.d/wazuh
+      register: wazuh_logrotate
+
+    - name: Align indexer logrotate retention
+      ansible.builtin.lineinfile:
+        path: /etc/logrotate.d/wazuh
+        regexp: '^\s*rotate\s+\d+'
+        line: "    rotate {{ wazuh_log_retention_days | int }}"
+      when: wazuh_logrotate.stat.exists
+
+    - name: Run log retention now
+      ansible.builtin.command: "{{ wazuh_log_retention_script }}"
+      when: wazuh_log_retention_run_now | bool
