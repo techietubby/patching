@@ -1,0 +1,35 @@
+[all]
+localhost ansible_connection=local
+
+[awx]
+localhost
+
+[katello]
+foreman ansible_host=foreman.persephone.local
+#192.168.0.49
+
+#[kubernetes]
+#k3s ansible_host=k3s.persephone.local
+#k3s-2 ansible_host=k3s-2.persephone.local
+#k3s-3 ansible_host=k3s-3.persephone.local
+#k3s-worker1 ansible_host=k3s-worker1.persephone.local
+#k3s-worker2 ansible_host=k3s-worker2.persephone.local
+#k3s-worker3 ansible_host=k3s-worker3.persephone.local
+
+[linux]
+ipa
+#rabbitmq
+#vcs
+#slb1 ansible_user=andrew
+#slb2 ansible_user=andrew
+wazuh
+#xeon.persephone.local
+
+[linux:vars]
+ansible_ssh_extra_args='-o StrictHostKeyChecking=no'
+
+#[ubuntu]
+#cyberwatch.bluefinch.local ansible_user=andrew
+
+
+
