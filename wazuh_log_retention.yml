@@ -1,15 +1,19 @@
 ---
-# Keep Wazuh application logs for a fixed number of days.
+# Keep Wazuh application logs and indexed data for a fixed number of days.
 #
 # Installs a small purge script plus a daily cron job on the Wazuh server, and
 # aligns the indexer logrotate config with the same retention. Only rotated or
 # archived files are deleted - live log files (e.g. the indexer slowlogs, which
 # can sit idle for weeks) are never touched.
 #
+# Also manages an OpenSearch ISM policy that deletes wazuh-alerts/monitoring/
+# statistics indices older than wazuh_ism_retention_days.
+#
 # Usage:
 #   ansible-playbook -i inventory wazuh_log_retention.yml
 #   ansible-playbook -i inventory wazuh_log_retention.yml -e wazuh_log_retention_days=30
 #   ansible-playbook -i inventory wazuh_log_retention.yml -e wazuh_log_retention_run_now=true
+#   ansible-playbook -i inventory wazuh_log_retention.yml -t ism     # indexer ISM policy only
 
 - name: Configure Wazuh log retention
   hosts: wazuh
@@ -22,6 +26,31 @@
     wazuh_log_retention_cron_minute: "30"
     # Set to true to also run the purge immediately after installing it
     wazuh_log_retention_run_now: false
+
+    # Wazuh indexer (OpenSearch) ISM retention for indexed data
+    wazuh_ism_retention_days: 14
+    wazuh_ism_policy_id: wazuh-alert-retention-policy
+    wazuh_ism_index_patterns:
+      - wazuh-alerts-*
+      - wazuh-monitoring-*
+      - wazuh-statistics-*
+    wazuh_indexer_url: https://127.0.0.1:9200
+    wazuh_indexer_certs: /etc/wazuh-indexer/certs
+    wazuh_ism_states:
+      - name: retention_state
+        actions: []
+        transitions:
+          - state_name: delete_alerts
+            conditions:
+              min_index_age: "{{ wazuh_ism_retention_days }}d"
+      - name: delete_alerts
+        actions:
+          - retry:
+              count: 3
+              backoff: exponential
+              delay: 1m
+            delete: {}
+        transitions: []
   tasks:
     - name: Ensure cronie is installed
       ansible.builtin.package:
@@ -80,3 +109,76 @@
     - name: Run log retention now
       ansible.builtin.command: "{{ wazuh_log_retention_script }}"
       when: wazuh_log_retention_run_now | bool
+
+    # ------------------------------------------------------------------
+    # Indexer data: ISM policy that deletes Wazuh indices after N days.
+    # ism_template auto-attaches the policy to newly created indices; the
+    # "add" call attaches it to any existing indices that are unmanaged.
+    # Note: min_index_age counts from index creation, so weekly
+    # monitoring/statistics indices keep between N-7 and N days of data.
+    # ------------------------------------------------------------------
+    - name: Read current ISM retention policy
+      ansible.builtin.uri:
+        url: "{{ wazuh_indexer_url }}/_plugins/_ism/policies/{{ wazuh_ism_policy_id }}"
+        method: GET
+        ca_path: "{{ wazuh_indexer_certs }}/root-ca.pem"
+        client_cert: "{{ wazuh_indexer_certs }}/admin.pem"
+        client_key: "{{ wazuh_indexer_certs }}/admin-key.pem"
+        status_code: [200, 404]
+      register: wazuh_ism_current
+      check_mode: false
+      tags: [ism]
+
+    - name: Create or update ISM retention policy
+      ansible.builtin.uri:
+        url: >-
+          {{ wazuh_indexer_url }}/_plugins/_ism/policies/{{ wazuh_ism_policy_id }}{{
+          ('?if_seq_no=' ~ wazuh_ism_current.json._seq_no ~ '&if_primary_term=' ~ wazuh_ism_current.json._primary_term)
+          if wazuh_ism_current.status == 200 else '' }}
+        method: PUT
+        ca_path: "{{ wazuh_indexer_certs }}/root-ca.pem"
+        client_cert: "{{ wazuh_indexer_certs }}/admin.pem"
+        client_key: "{{ wazuh_indexer_certs }}/admin-key.pem"
+        body_format: json
+        body:
+          policy:
+            description: "Wazuh indices retention policy ({{ wazuh_ism_retention_days }} days) - managed by Ansible"
+            default_state: retention_state
+            states: "{{ wazuh_ism_states }}"
+            ism_template:
+              - index_patterns: "{{ wazuh_ism_index_patterns }}"
+                priority: 1
+        status_code: [200, 201]
+      when: >-
+        wazuh_ism_current.status == 404 or
+        wazuh_ism_current.json.policy.states != wazuh_ism_states or
+        (wazuh_ism_current.json.policy.ism_template | default([], true)
+          | map(attribute='index_patterns') | flatten | sort) != (wazuh_ism_index_patterns | sort)
+      changed_when: true
+      tags: [ism]
+
+    - name: Attach ISM policy to existing unmanaged indices
+      ansible.builtin.uri:
+        url: "{{ wazuh_indexer_url }}/_plugins/_ism/add/{{ wazuh_ism_index_patterns | join(',') }}"
+        method: POST
+        ca_path: "{{ wazuh_indexer_certs }}/root-ca.pem"
+        client_cert: "{{ wazuh_indexer_certs }}/admin.pem"
+        client_key: "{{ wazuh_indexer_certs }}/admin-key.pem"
+        body_format: json
+        body:
+          policy_id: "{{ wazuh_ism_policy_id }}"
+      register: wazuh_ism_add
+      when: not ansible_check_mode
+      changed_when: wazuh_ism_add.json.updated_indices | default(0) > 0
+      # Indices that already have a policy are reported as failures; ignore those only
+      failed_when: >-
+        wazuh_ism_add.status != 200 or
+        (wazuh_ism_add.json.failed_indices | default([])
+          | rejectattr('reason', 'search', 'already has a policy') | list | length > 0)
+      tags: [ism]
+
+    - name: Report indices newly attached to the ISM policy
+      ansible.builtin.debug:
+        msg: "Attached {{ wazuh_ism_policy_id }} to {{ wazuh_ism_add.json.updated_indices }} index(es)"
+      when: wazuh_ism_add is changed
+      tags: [ism]
