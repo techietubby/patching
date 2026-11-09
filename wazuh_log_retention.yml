@@ -14,6 +14,7 @@
 #   ansible-playbook -i inventory wazuh_log_retention.yml -e wazuh_log_retention_days=30
 #   ansible-playbook -i inventory wazuh_log_retention.yml -e wazuh_log_retention_run_now=true
 #   ansible-playbook -i inventory wazuh_log_retention.yml -t ism     # indexer ISM policy only
+#   ansible-playbook -i inventory wazuh_log_retention.yml -t replicas  # single-node: replicas to 0
 
 - name: Configure Wazuh log retention
   hosts: wazuh
@@ -36,6 +37,8 @@
       - wazuh-statistics-*
     wazuh_indexer_url: https://127.0.0.1:9200
     wazuh_indexer_certs: /etc/wazuh-indexer/certs
+    # Single-node indexer: force replicas to 0 so cluster health can be green
+    wazuh_indexer_single_node: true
     wazuh_ism_states:
       - name: retention_state
         actions: []
@@ -182,3 +185,55 @@
         msg: "Attached {{ wazuh_ism_policy_id }} to {{ wazuh_ism_add.json.updated_indices }} index(es)"
       when: wazuh_ism_add is changed
       tags: [ism]
+
+    # ------------------------------------------------------------------
+    # Single-node indexer: replicas can never be allocated, which leaves
+    # the cluster yellow. Drop replicas to 0 on any yellow index and stop
+    # the daily ISM history index from being created with a replica.
+    # ------------------------------------------------------------------
+    - name: Set ISM history indices to 0 replicas
+      ansible.builtin.uri:
+        url: "{{ wazuh_indexer_url }}/_cluster/settings"
+        method: PUT
+        ca_path: "{{ wazuh_indexer_certs }}/root-ca.pem"
+        client_cert: "{{ wazuh_indexer_certs }}/admin.pem"
+        client_key: "{{ wazuh_indexer_certs }}/admin-key.pem"
+        body_format: json
+        body:
+          persistent:
+            plugins.index_state_management.history.number_of_replicas: 0
+      when: wazuh_indexer_single_node | bool and not ansible_check_mode
+      changed_when: false
+      tags: [replicas]
+
+    - name: List yellow indices
+      ansible.builtin.uri:
+        url: "{{ wazuh_indexer_url }}/_cat/indices?h=index,health&format=json&expand_wildcards=all"
+        method: GET
+        ca_path: "{{ wazuh_indexer_certs }}/root-ca.pem"
+        client_cert: "{{ wazuh_indexer_certs }}/admin.pem"
+        client_key: "{{ wazuh_indexer_certs }}/admin-key.pem"
+      register: wazuh_indices_health
+      check_mode: false
+      when: wazuh_indexer_single_node | bool
+      tags: [replicas]
+
+    - name: Set replicas to 0 on yellow indices
+      ansible.builtin.uri:
+        url: "{{ wazuh_indexer_url }}/{{ wazuh_yellow_indices | join(',') }}/_settings?expand_wildcards=all"
+        method: PUT
+        ca_path: "{{ wazuh_indexer_certs }}/root-ca.pem"
+        client_cert: "{{ wazuh_indexer_certs }}/admin.pem"
+        client_key: "{{ wazuh_indexer_certs }}/admin-key.pem"
+        body_format: json
+        body:
+          index:
+            number_of_replicas: 0
+      vars:
+        wazuh_yellow_indices: "{{ wazuh_indices_health.json | selectattr('health', 'equalto', 'yellow') | map(attribute='index') | list }}"
+      when:
+        - wazuh_indexer_single_node | bool
+        - not ansible_check_mode
+        - wazuh_yellow_indices | length > 0
+      changed_when: true
+      tags: [replicas]
