@@ -1,0 +1,100 @@
+---
+- name: Update Linux packages (RHEL family)
+  hosts:
+    - katello
+    - kubernetes
+    - linux
+  remote_user: root
+  become: true
+  become_method: sudo
+  serial: 1
+  tasks:
+    - when: ansible_distribution in ['AlmaLinux', 'CentOS', 'Rocky', 'RedHat']
+      block:
+        - name: Clean yum cache
+          ansible.builtin.command:
+            cmd: yum clean expire-cache
+          changed_when: false
+
+        - name: Upgrade all packages
+          ansible.builtin.yum:
+            name: "*"
+            state: latest
+            skip_broken: true
+          ignore_unreachable: true
+
+        - name: Check if reboot is required
+          ansible.builtin.shell:
+            cmd: /usr/bin/needs-restarting -r
+          register: reboot_required
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          ignore_unreachable: true
+
+        - name: Reboot host if required
+          ansible.builtin.reboot:
+            msg: "Rebooting due to package updates"
+            reboot_timeout: 600
+          when: reboot_required.rc == 1
+
+        - name: Gather installed package facts
+          ansible.builtin.package_facts:
+            manager: rpm
+
+        - name: Update AIDE database
+          ansible.builtin.shell: |
+            /usr/sbin/aide --update
+            cp -fp /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz
+            /usr/sbin/aide --check
+          when: "'aide' in ansible_facts.packages"
+          ignore_unreachable: true
+
+- name: Update Linux packages (Debian family)
+  hosts: ubuntu
+  remote_user: andrew
+  become_user: root
+  become: true
+  become_method: sudo
+  serial: 1
+  tasks:
+    - when: ansible_distribution in ['Debian', 'Ubuntu']
+      block:
+        - name: Update apt cache
+          ansible.builtin.apt:
+            update_cache: true
+
+        - name: Upgrade the OS (apt-get dist-upgrade)
+          ansible.builtin.apt:
+            upgrade: dist
+
+        - name: Check if reboot is required
+          ansible.builtin.stat:
+            path: /var/run/reboot-required
+          register: reboot_required_file
+
+        - name: Reboot host if required
+          ansible.builtin.reboot:
+            msg: "Rebooting due to package updates"
+            reboot_timeout: 600
+          when: reboot_required_file.stat.exists
+
+- name: Update Katello
+  hosts: katello
+  become_user: root
+  become: true
+  become_method: sudo
+  tasks:
+    - name: Run foreman-installer
+      ansible.builtin.command: /usr/sbin/foreman-installer --skip-puppet-version-check
+      ignore_errors: true
+
+- name: Update IPA
+  hosts: ipa
+  become_user: root
+  become: true
+  become_method: sudo
+  tasks:
+    - name: Run ipa-server-upgrade
+      ansible.builtin.command: /usr/sbin/ipa-server-upgrade
+      ignore_errors: true
