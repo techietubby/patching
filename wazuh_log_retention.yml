@@ -112,6 +112,7 @@
     - name: Run log retention now
       ansible.builtin.command: "{{ wazuh_log_retention_script }}"
       when: wazuh_log_retention_run_now | bool
+      changed_when: true
 
     # ------------------------------------------------------------------
     # Indexer data: ISM policy that deletes Wazuh indices after N days.
@@ -180,7 +181,7 @@
           | rejectattr('reason', 'search', 'already has a policy') | list | length > 0)
       tags: [ism]
 
-    - name: Report indices newly attached to the ISM policy
+    - name: Report indices newly attached to the ISM policy  # noqa: no-handler
       ansible.builtin.debug:
         msg: "Attached {{ wazuh_ism_policy_id }} to {{ wazuh_ism_add.json.updated_indices }} index(es)"
       when: wazuh_ism_add is changed

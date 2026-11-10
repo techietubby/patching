@@ -6,25 +6,26 @@
     - linux
   remote_user: root
   become: true
-  become_method: sudo
+  become_method: ansible.builtin.sudo
   serial: 1
   tasks:
-    - when: ansible_distribution in ['AlmaLinux', 'CentOS', 'Rocky', 'RedHat']
+    - name: Patch RHEL-family hosts
+      when: ansible_distribution in ['AlmaLinux', 'CentOS', 'Rocky', 'RedHat']
       block:
         - name: Clean yum cache
           ansible.builtin.command:
             cmd: yum clean expire-cache
           changed_when: false
 
-        - name: Upgrade all packages
-          ansible.builtin.yum:
+        - name: Upgrade all packages  # noqa: package-latest - upgrading everything is the point
+          ansible.builtin.dnf:
             name: "*"
             state: latest
             skip_broken: true
           ignore_unreachable: true
 
         - name: Check if reboot is required
-          ansible.builtin.shell:
+          ansible.builtin.command:
             cmd: /usr/bin/needs-restarting -r
           register: reboot_required
           changed_when: false
@@ -50,6 +51,7 @@
               /usr/sbin/aide --check
           when: "'aide' in ansible_facts.packages"
           ignore_unreachable: true
+          changed_when: true
           failed_when: false
 
 - name: Update Linux packages (Debian family)
@@ -57,10 +59,11 @@
   remote_user: andrew
   become_user: root
   become: true
-  become_method: sudo
+  become_method: ansible.builtin.sudo
   serial: 1
   tasks:
-    - when: ansible_distribution in ['Debian', 'Ubuntu']
+    - name: Patch Debian-family hosts
+      when: ansible_distribution in ['Debian', 'Ubuntu']
       block:
         - name: Update apt cache
           ansible.builtin.apt:
@@ -85,20 +88,22 @@
   hosts: katello
   become_user: root
   become: true
-  become_method: sudo
+  become_method: ansible.builtin.sudo
   tasks:
-    - name: Run foreman-installer
+    - name: Run foreman-installer  # noqa: ignore-errors
       ansible.builtin.command:
         cmd: /usr/sbin/foreman-installer --skip-puppet-version-check
+      changed_when: true
       ignore_errors: true
 
 - name: Update IPA
   hosts: ipa
   become_user: root
   become: true
-  become_method: sudo
+  become_method: ansible.builtin.sudo
   tasks:
-    - name: Run ipa-server-upgrade
+    - name: Run ipa-server-upgrade  # noqa: ignore-errors
       ansible.builtin.command:
         cmd: /usr/sbin/ipa-server-upgrade
+      changed_when: true
       ignore_errors: true
