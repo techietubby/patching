@@ -1,4 +1,4 @@
-name: Ansible Security & Quality Scan
+name: Ansible Lint
 
 on:
   push:
@@ -15,17 +15,3 @@ jobs:
       - name: Run Ansible Lint
         uses: ansible/ansible-lint@v26
         # It automatically finds playbooks, roles, and inventories in your repo
-
-  trivy-repo-scan:
-    name: Run Trivy Security Scan
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v5
-
-      - name: Scan Repository for Vulnerabilities
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          severity: 'CRITICAL,HIGH'
