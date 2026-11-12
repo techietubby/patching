@@ -1,0 +1,89 @@
+---
+# Free space in /boot by removing old kernels, and cap the number of kernels dnf keeps
+# installed so /boot doesn't fill up again.
+#
+# Old kernels are removed with dnf (never with rm), so the RPM database, boot loader entries
+# and /lib/modules stay consistent. The running kernel is never removed, even if it is not
+# one of the newest.
+#
+# Only dnf-based hosts (EL8+, Fedora) are handled; others are skipped with a message.
+#
+# Usage:
+#   ansible-playbook -i inventory kernel_cleanup.yml --check --diff   # preview
+#   ansible-playbook -i inventory kernel_cleanup.yml                  # apply
+#   ansible-playbook -i inventory kernel_cleanup.yml -l foreman       # one host
+
+- name: Remove old kernels and limit installed kernels
+  hosts: all
+  remote_user: root
+  become: true
+  become_method: ansible.builtin.sudo
+  vars:
+    # Number of kernels to keep installed (the newest N); also written to installonly_limit
+    kernel_cleanup_keep: 2
+    # Warn if /boot has less free space than this after cleanup (one kernel needs ~105 MB
+    # including its kdump initramfs)
+    kernel_cleanup_boot_min_free_mb: 120
+  tasks:
+    - name: Skip hosts that do not use dnf
+      ansible.builtin.debug:
+        msg: "Skipping {{ inventory_hostname }}: package manager is {{ ansible_pkg_mgr }}, not dnf"
+      when: ansible_pkg_mgr not in ['dnf', 'dnf5']
+
+    - name: Clean up kernels on dnf hosts
+      when: ansible_pkg_mgr in ['dnf', 'dnf5']
+      block:
+        - name: Set installonly_limit in dnf.conf
+          ansible.builtin.lineinfile:
+            path: /etc/dnf/dnf.conf
+            regexp: '^installonly_limit\s*='
+            line: "installonly_limit={{ kernel_cleanup_keep }}"
+            insertafter: '^\[main\]'
+            backup: true
+
+        - name: Find installed kernels older than the newest {{ kernel_cleanup_keep }}
+          ansible.builtin.command:
+            argv:
+              - dnf
+              - repoquery
+              - --installonly
+              - --latest-limit=-{{ kernel_cleanup_keep }}
+              - --queryformat=%{name}-%{version}-%{release}.%{arch}
+              - -q
+          register: kernel_cleanup_old
+          changed_when: false
+          check_mode: false
+
+        - name: Build list of old kernel packages, excluding the running kernel
+          ansible.builtin.set_fact:
+            kernel_cleanup_remove: >-
+              {{ kernel_cleanup_old.stdout_lines
+                 | map('trim') | select
+                 | reject('search', ansible_kernel | regex_escape)
+                 | list }}
+
+        - name: Show old kernel packages to remove
+          ansible.builtin.debug:
+            var: kernel_cleanup_remove
+
+        - name: Remove old kernel packages
+          ansible.builtin.dnf:
+            name: "{{ kernel_cleanup_remove }}"
+            state: absent
+          when: kernel_cleanup_remove | length > 0
+
+        - name: Check free space in /boot
+          ansible.builtin.command:
+            cmd: df --output=avail -BM /boot
+          register: kernel_cleanup_boot_df
+          changed_when: false
+          check_mode: false
+
+        - name: Report /boot free space
+          ansible.builtin.debug:
+            msg: >-
+              /boot has {{ kernel_cleanup_boot_free_mb }} MB free
+              {{ '(below ' ~ kernel_cleanup_boot_min_free_mb ~ ' MB: the next kernel update may not fit)'
+                 if kernel_cleanup_boot_free_mb | int < kernel_cleanup_boot_min_free_mb else '' }}
+          vars:
+            kernel_cleanup_boot_free_mb: "{{ kernel_cleanup_boot_df.stdout_lines[-1] | regex_replace('[^0-9]', '') }}"
