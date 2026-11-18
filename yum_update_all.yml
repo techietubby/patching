@@ -24,7 +24,7 @@
             skip_broken: true
           ignore_unreachable: true
 
-        - name: Check if reboot is required
+        - name: Check if reboot is required (RHEL family)
           ansible.builtin.command:
             cmd: /usr/bin/needs-restarting -r
           register: reboot_required
@@ -33,7 +33,7 @@
           check_mode: false
           ignore_unreachable: true
 
-        - name: Reboot host if required
+        - name: Reboot host if required (RHEL family)
           ansible.builtin.reboot:
             msg: "Rebooting due to package updates"
             reboot_timeout: 600
@@ -73,12 +73,12 @@
           ansible.builtin.apt:
             upgrade: dist
 
-        - name: Check if reboot is required
+        - name: Check if reboot is required (Debian family)
           ansible.builtin.stat:
             path: /var/run/reboot-required
           register: reboot_required_file
 
-        - name: Reboot host if required
+        - name: Reboot host if required (Debian family)
           ansible.builtin.reboot:
             msg: "Rebooting due to package updates"
             reboot_timeout: 600
