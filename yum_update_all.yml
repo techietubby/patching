@@ -107,3 +107,21 @@
         cmd: /usr/sbin/ipa-server-upgrade
       changed_when: true
       ignore_errors: true
+
+    # ipa-server-upgrade puts the CA back into the state it detected at
+    # start-up. Its CA status check can fail ("Retrieving CA status failed
+    # with status 404") and record a running CA as stopped, so the upgrade
+    # ends by stopping pki-tomcatd while still reporting success. This left
+    # the CA on ipa3 down from 5 to 18 Nov 2026. Restart everything so the CA
+    # comes back, then fail loudly if any IPA service is still down.
+    - name: Restart IPA services
+      ansible.builtin.command:
+        cmd: /usr/sbin/ipactl restart
+      changed_when: true
+
+    - name: Check all IPA services are running
+      ansible.builtin.command:
+        cmd: /usr/sbin/ipactl status
+      register: ipactl_status
+      changed_when: false
+      failed_when: ipactl_status.rc != 0 or 'STOPPED' in ipactl_status.stdout
