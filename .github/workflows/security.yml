@@ -3,6 +3,7 @@ name: Automated Security Scan
 on:
   push:
     branches: ["main", "master"]
+  pull_request:
 
 jobs:
   trivy-scan:

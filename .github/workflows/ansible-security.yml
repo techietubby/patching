@@ -3,6 +3,7 @@ name: Ansible Lint
 on:
   push:
     branches: ["main", "master"]
+  pull_request:
 
 jobs:
   ansible-lint:

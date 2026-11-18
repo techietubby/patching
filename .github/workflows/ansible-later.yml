@@ -1,13 +1,15 @@
-name: Ansible Later  # feel free to pick your own name
+name: Ansible Later
 on: [push, pull_request]
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
-    - name: run ansible-later action
-      uses: patrickjahns/ansible-later-action@master
-      with:
-        config: .later.yml
-        path: **/*.yml
+      - uses: actions/checkout@v5
+      - name: run ansible-later action
+        uses: patrickjahns/ansible-later-action@b72a8bf444c5af8ced62ce9d8e361777b3b15f47  # master, 2022-03
+        with:
+          # Quoted: an unquoted leading * is a YAML alias and made the
+          # whole workflow file invalid. No config: ansible-later uses its
+          # built-in defaults (there is no .later.yml in this repo).
+          path: "**/*.yml"
